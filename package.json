@@ -16,6 +16,7 @@
     "src",
     "lib",
     "scripts",
+    "test",
     "cordis.patch.yml",
     "README.md",
     "HEADED-CHANNEL.md"
