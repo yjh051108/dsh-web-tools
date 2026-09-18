@@ -36,7 +36,7 @@
 
 | | 本插件 `dsh-web-tools` | `browser-harness` 技能 |
 |---|---|---|
-| 浏览器 | WSL/Linux 系统 Chromium（`chromePath`），**headless** | 用户机器上的 Windows Edge，**可见窗口** |
+| 浏览器 | **本机 Windows 上的 Chrome**（`chromePath` 默认 `C:\Program Files\Google\Chrome\Application\chrome.exe`），**headless** | 用户机器上的 Windows Edge，**可见窗口** |
 | 连接 | CDP `127.0.0.1:9339`（插件自己 spawn） | CDP `ws://127.0.0.1:9222` |
 | profile | 独立 `profileDir`（默认 `DSH_HOME/.web-shot-profile`） | 用户日常 profile（带登录态） |
 | 共享性 | **单例·单页**——一个宿主一个浏览器一个页面 | 单实例·多标签——全机共享标签栏 |
