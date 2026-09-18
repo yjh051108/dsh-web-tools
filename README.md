@@ -11,9 +11,29 @@
 
 | 工具 | 作用 |
 |---|---|
-| `web_status` | 运行时与浏览器就绪状态（Chrome 路径/端口/profile/WebSocket 可用性） |
-| `web_shot` | 导航 + 等待 + 截图 → PNG 文件（`read_image` 直读） |
-| `web_dom` | 导航 + 回读标题与页面文本（断言回读，替代 dump-dom） |
+| `web_status` | 两条通道各自的就绪状态（headless 的 Chrome/端口/profile + **headed 的壳桥/targets**） |
+| `web_shot` | 导航 + 等待 + 截图 → PNG 文件（`read_image` 直读）；`channel` 选通道 |
+| `web_dom` | 导航 + 回读标题与页面文本（断言回读，替代 dump-dom）；`channel` 选通道 |
+
+## ★ 两条通道（v0.2.0 · `channel: "headless" | "headed"`）
+
+**默认 `headless`**（不传 `channel` ⇒ 行为与 v0.1.x 完全一致）。
+
+| | `headless`（默认） | `headed` |
+|---|---|---|
+| 跑的是谁 | 本插件**自己 spawn** 的 Chrome（`--headless`） | **electron 壳里那个你能看见的视图** |
+| 看得见吗 | ❌ | ✅ 就是同一个窗口 |
+| 你能接管吗 | ❌ | ✅ 鼠标直接点它 |
+| **登录态** | ❌ 无（干净新 profile） | ✅ **有**（该视图自己的 `persist:dsh-browser-*` 分区） |
+| 截图能与人互证吗 | ❌ | ✅ 你看着它截 |
+| 前置 | 有 Chrome 即可 | ★ **必须在桌面壳启动的 dsh 里** |
+
+> ★★ **"有头"不是"另一种 headless"** —— 它是**同一份页面、两个操作者**：你能点它，agent 能同时用 CDP 驱动它。
+>
+> ⚠️ **不可用时它会明确报错，绝不静默回落**（否则你会以为"截图 = 你看到的那个页面"而其实不是）。
+> 要无头请**显式**传 `channel:"headless"`。
+>
+> 📖 **完整方案（含接线点、登录态机制与实测、三步自验、已知限制）见 [`HEADED-CHANNEL.md`](./HEADED-CHANNEL.md)。**
 
 ## 实现要点（与预设版一致）
 
