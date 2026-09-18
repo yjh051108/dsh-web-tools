@@ -166,11 +166,68 @@ export function shellTargets(timeoutMs = 1500) {
   })
 }
 
-/** 选一个壳里的视图：优先有 url 的、最新的（generation 大）。返回 null = 没有可用视图。 */
-export function pickShellTarget(targets) {
+/** 选一个壳里的视图。★ v0.2.1：**优先挑"属于本会话"的那个**（多视图时不再靠猜）。
+ *
+ *  `windowId` 的语义（`desktop/main.js:516-522` 逐字）：
+ *    「两层身份，缺一不可：instanceId = 哪份 cookie · **windowId = 哪个窗口
+ *      （DSH 里一个会话就是一个窗口）**」——而它被赋的值就是那个 pane 的**会话 id**。
+ *
+ *  ⚠️ **拿不到当前会话 id 时【回落】并【报明】**（绝不静默按旧的挑）——
+ *     返回 `{ target, why }`；`why === ''` 表示"按会话精确挑中"。
+ */
+export function pickShellTarget(targets, currentSessionId = '') {
   const live = (targets || []).filter((t) => t && t.cdpUrl && !t.pending)
   if (live.length === 0) return null
-  return live.sort((a, b) => (Number(b.generation) || 0) - (Number(a.generation) || 0))[0]
+  const newest = (a, b) => (Number(b.generation) || 0) - (Number(a.generation) || 0)
+  if (currentSessionId) {
+    const mine = live.filter((t) => t.windowId === currentSessionId)
+    if (mine.length > 0) return { target: mine.sort(newest)[0], why: '' }
+    return {
+      target: live.sort(newest)[0],
+      why: '本会话（' + String(currentSessionId).slice(0, 24) + '）没有匹配视图 ⇒ '
+        + '已回落为"最新登记且有 cdpUrl"的那个 ⇒ 多视图并存时可能不是你这个会话的页面',
+    }
+  }
+  return {
+    target: live.sort(newest)[0],
+    why: '拿不到当前会话 id（exec.agent 缺失）⇒ 按"最新登记且有 cdpUrl"挑'
+      + ' ⇒ 多视图并存时可能不是你这个会话的页面',
+  }
+}
+
+/** 只要 target（不带 why）。 */
+export function pickShellTargetOnly(targets, currentSessionId = '') {
+  const r = pickShellTarget(targets, currentSessionId)
+  return r ? r.target : null
+}
+
+/** ★ 从工具执行的第二参取**当前会话 id**（多视图时据此挑对视图）。
+ *
+ *  ★★ 契约出处（我逐条核过的官方先例，**不是推断**）：
+ *    · `execute(args, exec)` 是官方签名（`dsh-tools` 内多处这么写）
+ *    · `ToolExecutionInput.agent?: Agent`（`dsh-tools/lib/types/index.d.ts:208`）
+ *    · `Agent` 的形状（`dsh-agent/lib/types/types.d.ts:11-14`）：
+ *        `readonly id: SessionId;   // "Session-backed Agent identity."`
+ *      ⚠️ 注意：**`Agent` 上是 `id`，不是 `sessionId`**
+ *      （`sessionId` 那名字在 `CreateAgentOptions` 上 · `dsh-agent/lib/types/index.d.ts:50`
+ *       —— 两者不是同一个东西，别混）
+ *    · 官方实用先例：`ctx.sessions.flush(exec.agent.session)` · `exec.agent?.session.header.cwd`
+ *      ⇒ 另有等价取法 `exec.agent?.session.id`（`Session` 上 `get id(): SessionId`）
+ *  ⇒ **取不到 ⇒ 返回 ''**（调用方据此**回落并报明**，不静默）。
+ */
+export function sessionIdOf(exec) {
+  try {
+    const a = exec && exec.agent
+    if (!a) return ''
+    if (typeof a.id === 'string' && a.id) return a.id                       // ← Agent.id（首选）
+    const s = a.session
+    if (s) {
+      if (typeof s.id === 'string' && s.id) return s.id                     // ← Session.id（等价）
+      const h = s.header
+      if (h && typeof h.id === 'string' && h.id) return h.id                // ← Session.header.id（等价）
+    }
+    return ''
+  } catch { return '' }
 }
 
 /** 「有头不可用」时的统一口径 —— ★ 明说原因，**不许静默回落到 headless**。 */
@@ -198,6 +255,8 @@ export function apply(ctx, config) {
   let inflight = 0
   // ★ v0.2.0：当前接的是壳里的哪个视图（headed 用；'' = 没接）
   let headedTargetId = ''
+  // ★ v0.2.1：上一次挑视图的"为什么"（'' = 按会话精确挑中；非空 = 回落了，要报明）
+  let lastPickWhy = ''
 
   const log = (...a) => console.log('[browser-tools]', ...a)
 
@@ -399,17 +458,19 @@ export function apply(ctx, config) {
    *   ② **有登录态**（壳的视图持有用户自己的 cookie 分区）—— 见文档"实测"节
    *   ③ **可见**：用户能在侧边栏里看到同一个页面 ⇒ **截图可与人互证、可接管**
    * ⚠️ 失败时**绝不静默回落 headless**（那会让调用方以为"有头生效了"）。 */
-  async function connectHeaded() {
+  async function connectHeaded(sessionId = '') {
     const st = await shellTargets()
     if (!st.ok) throw Object.assign(new Error(st.error), { headed: true })
-    const t = pickShellTarget(st.targets)
-    if (!t) throw Object.assign(new Error('壳桥在（' + st.url + '）但没有可用视图（/targets 为空）'), { headed: true })
-    if (conn && conn.ws && conn.ws.readyState === 1 && headedTargetId === t.id) return { target: t, reused: true }
+    const picked = pickShellTarget(st.targets, sessionId)
+    if (!picked) throw Object.assign(new Error('壳桥在（' + st.url + '）但没有可用视图（/targets 为空）'), { headed: true })
+    const t = picked.target
+    lastPickWhy = picked.why                      // ★ 回落时"为什么"要能被 web_status 报出来
+    if (conn && conn.ws && conn.ws.readyState === 1 && headedTargetId === t.id) return { target: t, reused: true, why: picked.why }
     try { if (wsObj) wsObj.close() } catch { }
     conn = null; wsObj = null; pageWsUrl = null
     await connectOnce(t.cdpUrl)          // ★ 复用同一套 CDP over WebSocket
     headedTargetId = t.id
-    return { target: t, reused: false }
+    return { target: t, reused: false, why: picked.why }
   }
 
   async function runHeadless(url, waitMs) {
@@ -419,12 +480,12 @@ export function apply(ctx, config) {
     return { title, buf: Buffer.from(shot.data, 'base64') }
   }
 
-  async function runHeaded(url, waitMs) {
-    const { target } = await connectHeaded()
+  async function runHeaded(url, waitMs, sessionId = '') {
+    const { target, why } = await connectHeaded(sessionId)
     if (url) { await cdp('Page.navigate', { url }); await new Promise((r) => setTimeout(r, Math.max(400, waitMs || 900))) }
     const { title } = await extract()
     const shot = await cdp('Page.captureScreenshot', { format: 'png', fromSurface: true })
-    return { title, buf: Buffer.from(shot.data, 'base64'), target }
+    return { title, buf: Buffer.from(shot.data, 'base64'), target, why }
   }
 
   async function extract() {
@@ -447,7 +508,7 @@ export function apply(ctx, config) {
     description: '浏览器验证运行时状态：两条通道（headless 无头 / headed 有头·壳里的可见视图）各自的就绪性、端口/复用实例。载入后调用一次。' + SHARED_DESC,
     parameters: { type: 'object', properties: {} },
     output: toolOutput(),
-    async execute() {
+    async execute(_args, exec) {
       return withBrowser(async () => {
       try {
         await ensureBrowser()
@@ -457,7 +518,10 @@ export function apply(ctx, config) {
         // ★ v0.2.0：有头通道的就绪性（只读探测，不 spawn、不影响无头）
         const sb = shellBridgeUrl()
         const st = sb ? await shellTargets() : { ok: false, targets: [], error: 'DSH_SHELL_BRIDGE_URL 未设置' }
-        const tgt = pickShellTarget(st.targets)
+        // ★ v0.2.1：按**本会话**挑（`exec.agent.id` = SessionId，官方标准取法）
+        const sid = sessionIdOf(exec)
+        const picked = pickShellTarget(st.targets, sid)
+        const tgt = picked ? picked.target : null
         return {
           ok: true, chrome: v.Browser, port, page: pageWsUrl ? 'ready' : 'lazy',
           profile: cfg.profileDir, instances: inst, idleMs: cfg.idleMs,
@@ -472,7 +536,10 @@ export function apply(ctx, config) {
               ready: !!(st.ok && tgt),
               bridgeUrl: sb || '',
               targets: (st.targets || []).length,
-              picked: tgt ? { id: tgt.id, url: String(tgt.url || '').slice(0, 120), title: String(tgt.title || '').slice(0, 80) } : null,
+              picked: tgt ? { id: tgt.id, url: String(tgt.url || '').slice(0, 120), title: String(tgt.title || '').slice(0, 80), windowId: String(tgt.windowId || '') } : null,
+              // ★ v0.2.1：精确挑中时 why='' ；回落时这里会说明"为什么不是按会话挑的"
+              sessionId: sid || '(未获取：exec.agent 缺失)',
+              pickWhy: picked ? picked.why : '',
               what: 'electron 壳里那个【用户看得见】的浏览器视图（同一份 cookie/登录态、可互证、可接管）',
               why: !sb ? '未检测到 DSH_SHELL_BRIDGE_URL ⇒ 不在桌面壳里（如 `dsh web`）⇒ 有头不可用'
                 : (st.ok ? (tgt ? '' : '壳桥在，但 /targets 为空 ⇒ 壳里还没打开任何浏览器视图')
@@ -499,19 +566,20 @@ export function apply(ctx, config) {
       channel: { type: 'string', enum: ['headless', 'headed'], description: '通道：headless（默认，自己 spawn 无头 Chrome、独立 profile、无登录态）| headed（截【electron 壳里那个用户看得见的视图】——同一份 cookie/登录态、可与用户互证；★ 只在桌面壳启动的 dsh 里可用，否则报错不回落）' },
     }, required: ['url'] },
     output: toolOutput(),
-    async execute(args) {
+    async execute(args, exec) {
       const url = String(args.url)
       if (!/^(https?|file):/i.test(url)) return { ok: false, error: 'url must be http(s) or file://' }
       const channel = args.channel === 'headed' ? 'headed' : 'headless'
       if (channel === 'headed') {
         // ★ 有头走独立路径：不 spawn、不杀进程、失败明说（不回落）
         try {
-          const { title, buf, target } = await runHeaded(url, args.waitMs ?? 1200)
+          const { title, buf, target, why } = await runHeaded(url, args.waitMs ?? 1200, sessionIdOf(exec))
           const out = path.resolve(args.outPath || path.join(process.cwd(), 'web-shot', 'shot-' + Date.now() + '.png'))
           mkdirSync(path.dirname(out), { recursive: true })
           writeFileSync(out, buf)
           return { ok: true, channel: 'headed', bytes: buf.length, path: out, title: title.slice(0, 80),
             targetId: target.id, targetUrl: String(target.url || '').slice(0, 120),
+            ...(why ? { pickWhy: why } : {}),
             note: '这是【用户看得见的那个视图】的截图 ⇒ 可与用户所见互证、可被用户接管。' }
         } catch (e) {
           return e && e.headed ? headedUnavailable(e.message) : { ok: false, channel: 'headed', error: e.message }
@@ -551,22 +619,23 @@ export function apply(ctx, config) {
       channel: { type: 'string', enum: ['headless', 'headed'], description: '通道：headless（默认）| headed（回读【壳里用户看得见的那个视图】的 DOM 文本；只在桌面壳启动的 dsh 里可用）' },
     }, required: ['url'] },
     output: toolOutput(),
-    async execute(args) {
+    async execute(args, exec) {
       const url = String(args.url)
       if (!/^(https?|file):/i.test(url)) return { ok: false, error: 'url must be http(s) or file://' }
       const channel = args.channel === 'headed' ? 'headed' : 'headless'
       if (channel === 'headed') {
         try {
-          const { title, text, url: finalUrl, target } = await (async () => {
-            const r = await connectHeaded()
+          const { title, text, url: finalUrl, target, why } = await (async () => {
+            const r = await connectHeaded(sessionIdOf(exec))
             if (url) { await cdp('Page.navigate', { url }); await new Promise((x) => setTimeout(x, Math.max(400, args.waitMs ?? 1200))) }
             const e = await extract()
-            return Object.assign({}, e, { target: r.target })
+            return Object.assign({}, e, { target: r.target, why: r.why })
           })()
           const max = Math.max(400, args.maxChars ?? 8000)
           const body = (text || '').slice(0, max)
           return { ok: true, channel: 'headed', title: (title || '').slice(0, 120), url: finalUrl || '',
-            maxChars: max, truncated: (text || '').length > max, targetId: target.id, text: body }
+            maxChars: max, truncated: (text || '').length > max, targetId: target.id,
+            ...(why ? { pickWhy: why } : {}), text: body }
         } catch (e) {
           return e && e.headed ? headedUnavailable(e.message) : { ok: false, channel: 'headed', error: e.message }
         }

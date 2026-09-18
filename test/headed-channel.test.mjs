@@ -10,7 +10,7 @@
  *
  * 用法：node test/headed-channel.test.mjs     退出码 0=全 PASS / 1=有 FAIL
  */
-import { shellBridgeUrl, shellTargets, pickShellTarget, headedUnavailable } from '../src/index.js'
+import { shellBridgeUrl, shellTargets, pickShellTarget, headedUnavailable, sessionIdOf } from '../src/index.js'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -60,12 +60,47 @@ ok('②b ★ headed 分支在 withBrowser（无头路径）之前 return ⇒ 结
 /* ③ 壳桥可达但没视图 ⇒ 另一种原因（可区分） */
 ok('③ pickShellTarget([]) === null（无视图 ⇒ 选不出目标）', pickShellTarget([]) === null)
 ok('③ pickShellTarget 跳过 pending 的视图',
-  pickShellTarget([{ id: 'a', pending: true, cdpUrl: 'ws://x' }]) === null)
-ok('③ pickShellTarget 取 generation 最大的活跃视图',
+  pickShellTarget([{ id: 'a', pending: true, cdpUrl: 'ws://x' }], 's1') === null)
+ok('③ pickShellTarget 取 generation 最大的活跃视图（无会话 id 时）',
   (pickShellTarget([
     { id: 'a', cdpUrl: 'ws://a', generation: 1 },
     { id: 'b', cdpUrl: 'ws://b', generation: 7 },
-  ]) || {}).id === 'b')
+  ], '') || {}).target?.id === 'b')
+
+/* ── ★ v0.2.1：按【本会话】挑视图（CEO 派的四条判据）──────────────── */
+const TWO = [
+  { id: 'other', cdpUrl: 'ws://o', generation: 99, windowId: 'session-BBB' },  // 别人的，但更新
+  { id: 'mine', cdpUrl: 'ws://m', generation: 1, windowId: 'session-AAA' },    // 本会话的，更旧
+]
+/* ① 两个视图 · 一个属本会话 ⇒ 必须挑中本会话那个（哪怕它 generation 更小） */
+const p1 = pickShellTarget(TWO, 'session-AAA')
+ok('★① 按本会话挑中（不按 generation 抢）', !!(p1 && p1.target.id === 'mine'), JSON.stringify(p1))
+ok('★① 精确挑中时 why === ""（不谎报回落）', !!(p1 && p1.why === ''))
+/* ② 拿不到会话 id（exec.agent 缺失）⇒ 回落**并报明** */
+const p2 = pickShellTarget(TWO, '')
+ok('★② 无会话 id ⇒ 回落（挑最新）', !!(p2 && p2.target.id === 'other'))
+ok('★② 且【报明】为什么（不是静默）', !!(p2 && /拿不到当前会话 id/.test(p2.why)), p2 && p2.why)
+/* ②b 本会话有 id 但【没有匹配视图】⇒ 也要报明 */
+const p3 = pickShellTarget(TWO, 'session-ZZZ')
+ok('★②b 本会话无匹配视图 ⇒ 回落且报明', !!(p3 && /没有匹配视图/.test(p3.why)), p3 && p3.why)
+/* ③ windowId 为空串（独立窗口那条只报 1 个参数）⇒ 不崩 */
+try {
+  const p4 = pickShellTarget([{ id: 'x', cdpUrl: 'ws://x', windowId: '' }], 'session-AAA')
+  ok('★③ windowId 为空串 ⇒ 不崩且给回落理由', !!(p4 && p4.target.id === 'x' && p4.why))
+} catch (e) { ok('★③ windowId 为空串 ⇒ 不崩且给回落理由', false, e.message) }
+
+/* ── ★ sessionIdOf(exec)：官方契约的取法 ─────────────────────────────── */
+ok('★ sessionIdOf(exec.agent.id) = SessionId（Agent 的形状是 readonly id）',
+  sessionIdOf({ agent: { id: 'session-AAA' } }) === 'session-AAA')
+ok('★ sessionIdOf 兼容 exec.agent.session.id（Session 上 get id(): SessionId）',
+  sessionIdOf({ agent: { session: { id: 'session-BBB' } } }) === 'session-BBB')
+ok('★ sessionIdOf 兼容 exec.agent.session.header.id',
+  sessionIdOf({ agent: { session: { header: { id: 'session-CCC' } } } }) === 'session-CCC')
+ok('★ sessionIdOf(undefined) = ""（不炸 ⇒ 调用方据此回落并报明）',
+  sessionIdOf(undefined) === '' && sessionIdOf({}) === '' && sessionIdOf({ agent: {} }) === '')
+ok('★ 三个工具的 execute 都接收第二参 exec（否则拿不到会话 id）',
+  (src.match(/async execute\(args, exec\)/g) || []).length >= 2
+  && /async execute\(_args, exec\)/.test(src))
 
 /* ④ src 与 lib 同步（build 过） */
 ok('④ src 与 lib 都含 shellTargets（build 已同步）',

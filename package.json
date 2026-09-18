@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-web-tools",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "浏览器工具（web_status/web_shot/web_dom）：两条通道 —— headless（自己 spawn 无头 Chrome，快/干净）与 headed（接 electron 壳里那个用户看得见、带登录态的视图）。CDP 直连，零第三方依赖。",
   "license": "Apache-2.0",
   "private": false,
