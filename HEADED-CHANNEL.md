@@ -86,6 +86,40 @@ GET  {DSH_SHELL_BRIDGE_URL}/selfcheck      ⇒ { mainWindowStorage, targets[], i
 换成**壳给的 `cdpUrl`** —— 后面 `cdp()` / `Page.navigate` / `Page.captureScreenshot` **完全复用**。
 ⇒ **零新依赖**（依然是 Node 22 内置的全局 `WebSocket`）。
 
+### ★ 那个"视图"到底从哪来（**侧边栏那半**）
+
+**两条来源，都会出现在 `/targets` 里：**
+
+```
+A · 侧边栏 tab（推荐）—— `dsh-agent-browser` 插件建的 <webview>
+    出现在右侧栏「浏览器」tab 里 · 分区 `persist:dsh-agent-browser-<身份>`
+    ⇒ ★ 你在侧边栏里看到它、能直接上手点；agent 同时用 CDP 驱动**同一个**页面
+
+B · 独立桌面窗口 —— 壳自己开的窗口（`POST /open-window` / 菜单）
+    分区 `persist:dsh-browser-<身份>`
+```
+
+**它怎么被 agent 接上（一条链，五步）**：
+```
+① 视图出现（你打开右侧栏「浏览器」）
+② 它自报家门：webview 就绪时把 webContentsId + instanceId + windowId 登记给壳
+③ 壳记账：进 `browserTargets` 表 ⇒ 于是出现在 `GET /targets`
+④ agent 读 `/targets` ⇒ 拿到 `cdpUrl: ws://127.0.0.1:3092/?targetId=<id>`
+⑤ agent 接上 ⇒ 此后**它点和你看的是同一个页面**（同一份 cookie）
+```
+⇒ ★★ **即「有头」= 接上侧边栏里那一个，不是另开一个。**
+
+> **切走会怎样**：侧边栏切到别的 tab ⇒ 该视图被**停到一边（park）**，**不销毁、不注销** ——
+> 所以你切回来时**登录态还在**，agent 也**照样能驱动它**。
+>
+> **在普通浏览器标签页里开 DSH 会怎样**：没有 `<webview>` ⇒ **侧边栏那条路不存在**
+> （第三方页面也拒绝被 iframe）。`dsh-agent-browser` 会**如实告诉你**，并给一条退路（推流）；
+> 而本插件的 `headed` 会**直接报"不可用"**。
+
+> ⚠️ **一个已知边界**（诚实）：多个视图同时开着时，`headed` 取的是**最新登记**的那个
+> （`/targets` 里确实带了 `windowId`，可用来精确区分"你这个会话的视图"⇒ **可修，属下一步**）。
+> **单视图时（最常用）没有这个问题。**
+
 ---
 
 ## 五 · ★ 登录态：机制已实测（**端到端那半标"未获取"**）
