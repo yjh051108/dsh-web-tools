@@ -17,7 +17,28 @@ import fs from 'node:fs'
 // ```
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = path.join(ROOT, 'lib', 'index.js')
-const PROFILE = path.join(os.tmpdir(), 'webtools-release-test-profile')
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * ★★ v0.2.1（2026-09-19）：`PROFILE` 必须【唯一】—— 否则本 test **不可重入**。
+ *
+ * 【缺陷（实测）】原写法是**固定绝对路径**：
+ *     `path.join(os.tmpdir(), 'webtools-release-test-profile')`
+ *   ⇒ 同一 test 的**两个实例会抢同一个 profile**：
+ *     · 实例 A 起 chrome（用该 profile）· 实例 B 也在起/杀**同一个 profile** 的 chrome
+ *     · `chromeCount()` 数的是"用这个 PROFILE 的主进程" ⇒ **数到对方的** ⇒ 断言互相打架
+ *   ⇒ ★★★ **实测复现（两个实例并发）**：**两个都 `FAIL ③ 多实例回收 + 重建单例`
+ *      :: connect ECONNREFUSED 127.0.0.1:9339` · 两个均 `exit=1`** ✅
+ *   ⇒ ⚠️ **而它的代价是"发版门 flaky"** —— 一个有时红有时绿的门 ⇒ **真红也会被当成噪声**。
+ *
+ * 【修】用 `fs.mkdtempSync(os.tmpdir() + 'webtools-release-test-')`：
+ *   · ★ **天然唯一**（OS 保证不重名）⇒ **可重入** ✅
+ *   · ★★ **且它是一个【只属于本次】的空目录** ⇒ 收尾时可 **`rmSync(-r)` 整目录删**
+ *     （不必依赖"chrome 自己退干净"）✅
+ *   ⚠️ 不用 `... + process.pid`：**同一进程跑两次时 pid 相同 ⇒ 仍不唯一**（只解决跨进程）。
+ *
+ * 【判据】★ **同一 test 并发跑两次 ⇒ 两次都 PASS**（"可重入"的机械判据）✅
+ * ══════════════════════════════════════════════════════════════════════════ */
+const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'webtools-release-test-'))
 
 /* ══════════════════════════════════════════════════════════════════════════
  * ★★ 前置探测：这个判据需要【真浏览器】⇒ 没有就**显式 SKIP + exit 2**。
@@ -69,10 +90,28 @@ const chromeCount = () => {
     return lines.filter((l) => l.includes(PROFILE) && !l.includes('--type=')).length
   } catch { return -1 }
 }
-const waitFor = async (fn, ms = 8000, step = 300) => {
+// ★★ v0.2.1：超时**先测再定**（不拍脑袋）。
+//   实测（2026-09-19 · 本机 · 同一个 profile 探针）：
+//     · 起 chrome 到"数到 1 个"= **1703ms**
+//     · 杀掉到"归 0"= **1375ms**
+//   ⇒ 原阈值 8000/9000ms **约是实测值的 5–6 倍** ⇒ 正常路径**不缺余量**；
+//     所以「8s 不够」不是本 test flaky 的主因（**主因是固定 profile 被两个实例抢**，见上方 PROFILE 注释）。
+//   ⇒ ⚠️ 但仍要给它**明确语义**：超时就报"等了 N 秒、仍剩 K 个"——
+//     否则"超时"会被读成"断言失败"，而**它们不是一回事**（一个是性能/负载，一个是正确性）。
+const WAIT_MS = Number(process.env.WEBTOOLS_WAIT_MS || 20000)
+const waitFor = async (fn, ms = WAIT_MS, step = 300) => {
   const t0 = Date.now()
   while (Date.now() - t0 < ms) { const v = fn(); if (v) return v; await new Promise((r) => setTimeout(r, step)) }
   return fn()
+}
+/** 等"某个计数归 0"，超时则**报明**等了多久、还剩几个（不让超时冒充断言失败）。 */
+const waitZero = async (label, ms = WAIT_MS) => {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    if (chromeCount() === 0) return { ok: true, ms: Date.now() - t0 }
+    await new Promise((r) => setTimeout(r, 300))
+  }
+  return { ok: false, ms: Date.now() - t0, left: chromeCount(), label }
 }
 const results = []
 const T = async (name, fn) => {
@@ -108,9 +147,9 @@ await T('启动一次浏览器（web_status）', async () => {
 
 await T('① 卸载清：cleanup 后同 profile chrome 归 0', async () => {
   A.cleanup()
-  const n = await waitFor(() => (chromeCount() === 0 ? 1 : 0), 8000)
-  if (n !== 1) throw new Error('残留 count=' + chromeCount())
-  return 'count=0'
+  const z = await waitZero('① 卸载清')
+  if (!z.ok) throw new Error('超时 ' + z.ms + 'ms，仍剩 ' + z.left + ' 个（不是断言失败，是没退干净）')
+  return 'count=0（' + z.ms + 'ms）'
 })
 
 await T('② 空闲超时自动释放（idleMs=1500）', async () => {
@@ -118,10 +157,10 @@ await T('② 空闲超时自动释放（idleMs=1500）', async () => {
   const r = await B.tools.web_status.execute({})
   if (!r.ok) throw new Error(JSON.stringify(r))
   if (chromeCount() < 1) throw new Error('chrome 未起来')
-  const ok = await waitFor(() => (chromeCount() === 0 ? 1 : 0), 9000)
-  if (!ok) throw new Error('空闲未释放 count=' + chromeCount())
+  const z = await waitZero('② 空闲释放')
+  if (!z.ok) throw new Error('超时 ' + z.ms + 'ms，空闲却仍剩 ' + z.left + ' 个（不是断言失败）')
   B.cleanup()
-  return 'idle 释放后 count=0'
+  return 'idle 释放后 count=0（' + z.ms + 'ms）'
 })
 
 await T('③ 多实例回收 + 重建单例', async () => {

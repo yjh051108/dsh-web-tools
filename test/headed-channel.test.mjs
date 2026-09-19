@@ -116,6 +116,19 @@ ok('★ release.test 无 Chrome ⇒ 显式 SKIP 并 exit(2)（不是 FAIL=1、�
   /SKIP: 无系统 Chrome/.test(rel) && /未获取/.test(rel) && /process\.exit\(2\)/.test(rel))
 ok('★ release.test 的退出码是三态（0 过 / 1 失败 / 2 未获取）—— 文档行写明',
   /0 = 全过 · 1 = 有失败 · 2 = 未获取/.test(rel))
+
+/* ── ★ v0.2.1：可重入（固定路径 ⇒ 不可重入 ⇒ 发版门 flaky）──────────────
+ * 实测缺陷（2026-09-19）：`PROFILE` 原是**固定绝对路径** ⇒ 同一 test 的两个实例
+ * 抢同一个 profile ⇒ 两个实例都 FAIL（`ECONNREFUSED 127.0.0.1:9339`）。
+ * 修：`fs.mkdtempSync(os.tmpdir() + 'webtools-release-test-')` ⇒ 天然唯一 ✅
+ * 「可重入」的机械判据 = **同一 test 并发跑两次 ⇒ 都 PASS**。
+ * 这里静态钉住"它用的是唯一目录"（真并发对照在提交记录里跑过）。 */
+ok('★ release.test 的 PROFILE 用 mkdtempSync（唯一 ⇒ 可重入）',
+  /^const PROFILE = fs\.mkdtempSync\(path\.join\(os\.tmpdir\(\), 'webtools-release-test-'\)\)/m.test(rel))
+ok('★ 且【代码里】不再有固定路径赋值（注释里引旧写法说明缺陷 —— 那是文档，不算）',
+  !/^const PROFILE = .*'webtools-release-test-profile'/m.test(rel))
+ok('★ 超时阈值是【先测再定】的（注释里有实测毫秒），且超时报"等了多久/剩几个"',
+  /实测（2026-09-19/.test(rel) && /仍剩/.test(rel))
 ok('★ 探测读的是【本测试真正加载的文件】（lib 优先，src 兜底）—— 不是硬编码猜测',
   /for \(const rel of \['lib\/index\.js', 'src\/index\.js'\]\)/.test(rel))
 
