@@ -16,7 +16,7 @@ import fs from 'node:fs'
 //       `import.meta.url    = file:///C:/Users/…/_tilde%7Eprobe/probe.mjs`
 //       `new URL().pathname = /C:/Users/…/_tilde%7Eprobe/probe.mjs`   ← **留着 `%7E`** ❌
 //       `fileURLToPath      = C:\Users\…\_tilde~probe\probe.mjs`      ← **正确解码** ✅
-//   ⇒ ★★ 而 Windows 的 **8.3 短路径名**（如 `C:\Users\ADMINI~1`）**含 `~`** ⇒ **那条路径算错 ⇒ ENOENT**
+//   ⇒ ★★ 而 Windows 的 **8.3 短路径名**（如 `C:\Users\<账户前 6 字符>~1`）**含 `~`** ⇒ **那条路径算错 ⇒ ENOENT**
 //     ⇒ ⚠️ 即：**只在【短路径名】下崩**（**长用户名下可能碰巧能跑**）——
 //       所以"在我这儿能跑"【不构成证据】（`B119` 那族：环境变了，结论就变）
 //   ⇒ ★ 判据：**同一个目录里的三个 test 只该有一种写法** ⇒
