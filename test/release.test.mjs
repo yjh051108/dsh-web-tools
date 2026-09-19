@@ -9,7 +9,7 @@ import fs from 'node:fs'
 
 // ★★ `ROOT` 必须用 `fileURLToPath`（**不许用 `new URL().pathname`**）
 // ```
-// 【缺陷（2026-09-19 修）】原写法漏了百分号解码 ⇒ 而 Windows 的 8.3 短路径名（`ADMINI~1`）
+// 【缺陷（2026-09-19 修）】原写法漏了百分号解码 ⇒ 而 Windows 的 8.3 短路径名（`<账户前 6 字符>~1`）
 //   含 `~`（URL 里编码成 `%7E`）⇒ 路径算错 ⇒ `ENOENT`。
 //   ⇒ ★ 实证与判据见 `test/concurrency-hint.test.mjs` 同一处的长注释 ✅
 //   ⇒ ★★ 判据：**三个 test 只该有一种写法**（`fileURLToPath`）—— 本仓 `headed-channel` 早就是对的 ✅
