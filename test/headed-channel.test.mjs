@@ -106,6 +106,19 @@ ok('★ 三个工具的 execute 都接收第二参 exec（否则拿不到会话 
 ok('④ src 与 lib 都含 shellTargets（build 已同步）',
   src.includes('export function shellTargets') && lib.includes('export function shellTargets'))
 
+/* ── ★ v0.2.1：release.test 的"无 Chrome"三态（判据 2026-09-19）───────────
+ * 为什么在此处**静态核**它：`release.test.mjs` 需要真 Chrome ⇒ 它自己可能 SKIP(2)；
+ * 而"它有没有那条显式 SKIP 分支"这件事**不需要 Chrome 就能判** ⇒ 放这里机械核 ✅ */
+const rel = readFileSync(new URL('./release.test.mjs', import.meta.url), 'utf8')
+ok('★ release.test 有 Chrome 存在探测（读 chromePath + existsSync）',
+  /chromePath:/.test(rel) && /existsSync\(CHROME_PATH\)/.test(rel))
+ok('★ release.test 无 Chrome ⇒ 显式 SKIP 并 exit(2)（不是 FAIL=1、更不是 0）',
+  /SKIP: 无系统 Chrome/.test(rel) && /未获取/.test(rel) && /process\.exit\(2\)/.test(rel))
+ok('★ release.test 的退出码是三态（0 过 / 1 失败 / 2 未获取）—— 文档行写明',
+  /0 = 全过 · 1 = 有失败 · 2 = 未获取/.test(rel))
+ok('★ 探测读的是【本测试真正加载的文件】（lib 优先，src 兜底）—— 不是硬编码猜测',
+  /for \(const rel of \['lib\/index\.js', 'src\/index\.js'\]\)/.test(rel))
+
 /* 收尾 */
 if (savedEnv === undefined) delete process.env.DSH_SHELL_BRIDGE_URL
 else process.env.DSH_SHELL_BRIDGE_URL = savedEnv

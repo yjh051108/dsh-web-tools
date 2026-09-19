@@ -1,5 +1,6 @@
 // release.test — 浏览器进程释放纪律真机回归（v0.1.2）。
-// 用法：node test/release.test.mjs   （需要系统 Chrome；退出码 0=全过）
+// 用法：node test/release.test.mjs   （需要系统 Chrome）
+// 退出码三态（与 check-all 一致）：**0 = 全过 · 1 = 有失败 · 2 = 未获取（无 Chrome ⇒ 显式 SKIP）**
 // 覆盖：① 卸载清 ② 空闲超时自动释放 ③ 多实例自动回收 + 重建单例
 import path from 'node:path'
 import os from 'node:os'
@@ -17,6 +18,46 @@ import fs from 'node:fs'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = path.join(ROOT, 'lib', 'index.js')
 const PROFILE = path.join(os.tmpdir(), 'webtools-release-test-profile')
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * ★★ 前置探测：这个判据需要【真浏览器】⇒ 没有就**显式 SKIP + exit 2**。
+ *
+ * 为什么要有这段（2026-09-19）：
+ *   本文件的三条判据都要**真 Chrome**（启动 / 空闲释放 / 多实例回收）。
+ *   而没有 Chrome 时，旧行为是：每条都抛错 ⇒ 收成 `FAIL …` ⇒ `RELEASE-TEST-FAIL=3` + `exit 1`。
+ *   ⇒ ⚠️ **那不是假绿**（它确实报错）—— 但**"报错"与"报未获取"语义不同**：
+ *     · `exit 1`（FAIL）= **"它坏了"** ⇒ 人去查代码
+ *     · `exit 2`（未获取）= **"这条判据没跑成"** ⇒ 而**必须显式说出原因**，否则下一个人会以为跑过了
+ *   ⇒ 所以这里与 `check-all` 的三态对齐：**0 = 过 · 1 = 失败 · 2 = 未获取** ✅
+ *
+ * ⚠️ **探测方式**：读 `src/index.js` 里那个**真实的 `chromePath`**（硬编码默认值）⇒ `existsSync`。
+ *   **不要用"缩 PATH"那种探法** —— 实测无效（那个路径是硬编码的，PATH 变了也不影响它）。
+ *   ⇒ 判据：**"我造了环境"要能指出"那个变量在哪一行被读"** ✅
+ * ══════════════════════════════════════════════════════════════════════════ */
+const CHROME_PATH = (() => {
+  // ⚠️ 读**本测试真正加载的那个文件**（`ENTRY` = `lib/index.js`）优先；
+  //    源码形态（只有 `src/`、未 build）时退回 `src/index.js`。
+  for (const rel of ['lib/index.js', 'src/index.js']) {
+    try {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8')
+      const m = src.match(/chromePath:\s*'((?:[^'\\]|\\.)*)'/)
+      if (m) return m[1].replace(/\\\\/g, '\\').replace(/\\'/g, "'")
+    } catch { /* 试下一个 */ }
+  }
+  return ''
+})()
+const CHROME_EXISTS = CHROME_PATH !== '' && fs.existsSync(CHROME_PATH)
+// ★ 兜底开关（供 CI 显式模拟；**判据②用的是"真造环境"**，见下）
+const FORCED_NO_CHROME = process.env.WEBTOOLS_NO_CHROME === '1'
+if (FORCED_NO_CHROME || CHROME_EXISTS === false) {
+  console.log('SKIP: 无系统 Chrome ⇒ 未获取（本判据要真浏览器）')
+  console.log('  探测的路径（来自本测试加载的那个文件的 chromePath）= ' + (CHROME_PATH || '(未取到)'))
+  console.log('  existsSync = ' + (CHROME_PATH ? fs.existsSync(CHROME_PATH) : 'n/a')
+    + (FORCED_NO_CHROME ? '（★ 本次由 WEBTOOLS_NO_CHROME=1 强制模拟）' : ''))
+  console.log('  ⇒ 三条判据（启动 / 空闲释放 / 多实例回收）都需要真 Chrome；')
+  console.log('     本条**没有跑**，不是"通过"，也不是"失败" ⇒ 退出码 2 = 未获取。')
+  process.exit(2)
+}
 
 const chromeCount = () => {
   try {
