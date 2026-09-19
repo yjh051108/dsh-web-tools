@@ -3,11 +3,18 @@
 // 覆盖：① 卸载清 ② 空闲超时自动释放 ③ 多实例自动回收 + 重建单例
 import path from 'node:path'
 import os from 'node:os'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..')
+// ★★ `ROOT` 必须用 `fileURLToPath`（**不许用 `new URL().pathname`**）
+// ```
+// 【缺陷（2026-09-19 修）】原写法漏了百分号解码 ⇒ 而 Windows 的 8.3 短路径名（`ADMINI~1`）
+//   含 `~`（URL 里编码成 `%7E`）⇒ 路径算错 ⇒ `ENOENT`。
+//   ⇒ ★ 实证与判据见 `test/concurrency-hint.test.mjs` 同一处的长注释 ✅
+//   ⇒ ★★ 判据：**三个 test 只该有一种写法**（`fileURLToPath`）—— 本仓 `headed-channel` 早就是对的 ✅
+// ```
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = path.join(ROOT, 'lib', 'index.js')
 const PROFILE = path.join(os.tmpdir(), 'webtools-release-test-profile')
 

@@ -5,11 +5,24 @@
 //       ④ detectOtherBrowser 对死端口返回 running=false（只读探测，不控制）
 import path from 'node:path'
 import os from 'node:os'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..')
+// ★★ `ROOT` 必须用 `fileURLToPath`（**不许用 `new URL().pathname`**）
+// ```
+// 【缺陷（2026-09-19 修）】原写法：`new URL(import.meta.url).pathname`
+//   ⇒ ★ `pathname` **【不解码】百分号编码** —— 实证（目录名带 `~` 时）：
+//       `import.meta.url    = file:///C:/Users/…/_tilde%7Eprobe/probe.mjs`
+//       `new URL().pathname = /C:/Users/…/_tilde%7Eprobe/probe.mjs`   ← **留着 `%7E`** ❌
+//       `fileURLToPath      = C:\Users\…\_tilde~probe\probe.mjs`      ← **正确解码** ✅
+//   ⇒ ★★ 而 Windows 的 **8.3 短路径名**（如 `C:\Users\ADMINI~1`）**含 `~`** ⇒ **那条路径算错 ⇒ ENOENT**
+//     ⇒ ⚠️ 即：**只在【短路径名】下崩**（**长用户名下可能碰巧能跑**）——
+//       所以"在我这儿能跑"【不构成证据】（`B119` 那族：环境变了，结论就变）
+//   ⇒ ★ 判据：**同一个目录里的三个 test 只该有一种写法** ⇒
+//     本仓 `test/headed-channel.test.mjs` 早就是对的写法 ⇒ **本文件与 `release.test.mjs` 对齐它** ✅
+// ```
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = path.join(ROOT, 'lib', 'index.js')
 const SRC = fs.readFileSync(path.join(ROOT, 'src', 'index.js'), 'utf8')
 
