@@ -132,6 +132,21 @@ ok('★ 超时阈值是【先测再定】的（注释里有实测毫秒），且
 ok('★ 探测读的是【本测试真正加载的文件】（lib 优先，src 兜底）—— 不是硬编码猜测',
   /for \(const rel of \['lib\/index\.js', 'src\/index\.js'\]\)/.test(rel))
 
+/* ── ★★★ D 条（2026-09-19）：裸 `powershell.exe` 不是 Windows 命令（它不在 System32 根下）──
+ * 实测：`C:\Windows\System32\powershell.exe` = **不存在**；
+ *       `…\WindowsPowerShell\v1.0\powershell.exe` = 存在。
+ * ⇒ PATH 缺那一层 ⇒ 裸名 `ENOENT` ⇒ `spawnSync` **无异常**·`stdout=''` ⇒ 计数算出 **0**
+ *   ⇒ **"读不到"冒充"读到 0"** ⇒ 三条断言全错（实测 `FAIL=3`）。
+ * 修：① 绝对路径候选 ② **必须查 `r.error`**（不许把"没读到"当 0）。 */
+ok('★★ release.test 用绝对路径候选解析 PowerShell（不是裸名）',
+  /WindowsPowerShell/.test(rel) && /PS_BIN/.test(rel))
+ok('★★ release.test 的 spawnSync 结果【查了 error】（不许把"读不到"当 0）',
+  /r\.error/.test(rel) && /读不到进程表/.test(rel))
+ok('★★【代码里】没有裸 spawnSync(\'powershell.exe\')（test 与 src 都查）',
+  !/spawnSync\('powershell\.exe'/.test(src) && !/spawnSync\('powershell\.exe'/.test(rel))
+ok('★★ src 也有 shellExe()（源头 detectInstances 同样不能裸名）',
+  /function shellExe\(\)/.test(src) && /spawnSync\(shellExe\(\)/.test(src))
+
 /* 收尾 */
 if (savedEnv === undefined) delete process.env.DSH_SHELL_BRIDGE_URL
 else process.env.DSH_SHELL_BRIDGE_URL = savedEnv

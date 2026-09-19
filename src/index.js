@@ -21,7 +21,7 @@
  * 可用，则本模块是它的轻量子集，运行时二选一即可。
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync, readlinkSync } from 'node:fs'
+import { mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync, readlinkSync, existsSync } from 'node:fs'
 import { createServer } from 'node:net'
 import http from 'node:http'
 import path from 'node:path'
@@ -299,6 +299,20 @@ export function apply(ctx, config) {
   async function disarmPage() {
     try { await cdp('Page.navigate', { url: 'about:blank' }) } catch { }
   }
+  /* ★★ D 条（2026-09-19）：**shell 可执行文件的解析** —— 不许用裸 `powershell.exe`。
+   *   实测：`C:\Windows\System32\powershell.exe` ⇒ **不存在**；
+   *        `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` ⇒ **存在** ✅
+   *   ⇒ PATH 缺 `…\WindowsPowerShell\v1.0\` 那一层 ⇒ 裸名 `ENOENT` ⇒
+   *     `spawnSync` **无异常**返回 `stdout=''` ⇒ 计数算出 `0`（**"读不到"冒充"读到 0"**）。
+   *   ⇒ ★ 正解：**绝对路径候选优先**，PATH 上的裸名只作最后回落（并记下用了哪个）。 */
+  function shellExe() {
+    if (process.platform === 'linux') return 'pwsh'
+    const abs = path.join(process.env.SystemRoot || 'C:\\Windows',
+      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    try { if (existsSync(abs)) return abs } catch { }
+    return 'powershell.exe'
+  }
+
   function detectInstances() {
     try {
       // v0.1.3：Linux/WSL 走 /proc（原实现只认 powershell.exe，本机 ENOENT → instances 恒 0，
@@ -309,10 +323,16 @@ export function apply(ctx, config) {
       //  ① 旧实现把 renderer/gpu 子进程一起数（单个 Chrome≈10 进程）→「多例提醒」永远误报、回收误杀；
       //  ② `-notmatch '--type='` 经 Node→powershell 传参会被参数解析吞掉（实测 out 为空、exit 0）——
       //     故 PowerShell 只负责**取命令行**，过滤放到 JS 里做（零引号依赖）。
-      const r = spawnSync('powershell.exe', ['-NoProfile', '-Command',
+      // ★★★ v0.2.1（2026-09-19 · D 条）：**不许用裸 `powershell.exe`** ——
+      //   它【不在 System32 根下】（实测 `C:\Windows\System32\powershell.exe` = False）⇒
+      //   PATH 缺 `…\WindowsPowerShell\v1.0\` 那一层时 ⇒ `spawnSync` **无异常**返回 `stdout=''` ⇒
+      //   这里会算出 **`0`** ⇒ ★ **"读不到"冒充"读到 0"**（同一个值 · 含义相反）⇒
+      //   「多例提醒」与「残留回收」**静默空转**（实测：摘掉那一层 ⇒ 本函数返回 0）。
+      const r = spawnSync(shellExe(), ['-NoProfile', '-Command',
         `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Select-Object -ExpandProperty CommandLine`],
         { encoding: 'utf8', timeout: 8000 })
-      const lines = String(r.stdout || '').split(/\r?\n/).filter(Boolean)
+      if (r.error || r.status !== 0) return 0   // 读不到 ⇒ 0（**这是本函数的既有语义**：
+      const lines = String(r.stdout || '').split(/\r?\n/).filter(Boolean)  //  调用方只拿它做"是否>1"）
       return lines.filter((l) => l.includes(cfg.profileDir) && !l.includes('--type=')).length
     } catch { return 0 }
   }
@@ -350,7 +370,7 @@ export function apply(ctx, config) {
         for (const pid of pids) { try { process.kill(pid, 'SIGKILL') } catch { } }
       } else {
         const esc = String(cfg.profileDir).replace(/\\/g, '\\\\')
-        spawnSync('powershell.exe', ['-NoProfile', '-Command',
+        spawnSync(shellExe(), ['-NoProfile', '-Command',
           `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -match '${esc}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`],
           { stdio: 'ignore', timeout: 15000 })
       }

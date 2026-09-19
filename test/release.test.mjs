@@ -19,6 +19,36 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ENTRY = path.join(ROOT, 'lib', 'index.js')
 
 /* ══════════════════════════════════════════════════════════════════════════
+ * ★★★ D 条（2026-09-19）：**不要用裸 `powershell.exe`** —— 它【不在 System32 根下】。
+ *
+ * 【实测读数】
+ *   `C:\Windows\System32\powershell.exe` ⇒ **不存在**（False）
+ *   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` ⇒ **存在** ✅
+ * ⇒ ★★ **即：PATH 里若没有 `…\WindowsPowerShell\v1.0\` 那一层 ⇒ 裸名 `ENOENT`** ✅
+ *   ⚠️ **而 `spawnSync` 失败【不抛异常】** ⇒ `r.stdout = ''` ⇒ `lines = []`
+ *     ⇒ ★★★ **`chromeCount()` 返回 `0`** ⇒ **三条断言全错**（`chrome 未起来 count=0`）
+ *   ⇒ 那不是"浏览器起不来"，是【它数不到】。
+ *
+ * 【实测复现】把 `…\WindowsPowerShell\v1.0\` 从 PATH 摘掉 ⇒
+ *   `RELEASE-TEST-FAIL=3` · `FAIL 启动一次浏览器 :: chrome 未起来 count=0` ✅
+ *
+ * 【修 1】**绝对路径候选优先**（并可回落 PATH，但**写明用了哪个**）
+ * 【修 2】★★★ **必须查 `r.error`** —— **不许把"没读到"当成 `0`**：
+ *   `0` 在断言里是**合法计数**（"没有残留"）⇒ **"读不到"与"读到 0"【同一个值 · 含义相反】** ✅
+ *   ⇒ 这正是今晚那族的**精确形态**：**"读不到"显示成"0"** ✅
+ * ══════════════════════════════════════════════════════════════════════════ */
+const PS_CANDIDATES = [
+  path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+  'powershell.exe', // 回落 PATH（下面会写明用了哪个）
+]
+let PS_BIN = ''
+let PS_HOW = ''
+for (const cand of PS_CANDIDATES) {
+  if (cand === 'powershell.exe') { PS_BIN = cand; PS_HOW = 'PATH 上的裸名'; break }
+  if (fs.existsSync(cand)) { PS_BIN = cand; PS_HOW = '绝对路径候选'; break }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
  * ★★ v0.2.1（2026-09-19）：`PROFILE` 必须【唯一】—— 否则本 test **不可重入**。
  *
  * 【缺陷（实测）】原写法是**固定绝对路径**：
@@ -80,16 +110,26 @@ if (FORCED_NO_CHROME || CHROME_EXISTS === false) {
   process.exit(2)
 }
 
-const chromeCount = () => {
-  try {
-    // 只数主进程；过滤在 JS 里做（PowerShell 传参吞 `-notmatch '--type='`，实测空输出）
-    const r = spawnSync('powershell.exe', ['-NoProfile', '-Command',
-      `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Select-Object -ExpandProperty CommandLine`],
-      { encoding: 'utf8', timeout: 15000 })
-    const lines = String(r.stdout || '').split(/\r?\n/).filter(Boolean)
-    return lines.filter((l) => l.includes(PROFILE) && !l.includes('--type=')).length
-  } catch { return -1 }
+/** 读进程表。★ 返回 `{ n, err }` —— **`err` 非空时 `n` 无意义**（不许当 0 用）。 */
+const chromeCountRaw = () => {
+  // 只数主进程；过滤在 JS 里做（PowerShell 传参吞 `-notmatch '--type='`，实测空输出）
+  const r = spawnSync(PS_BIN, ['-NoProfile', '-Command',
+    `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Select-Object -ExpandProperty CommandLine`],
+    { encoding: 'utf8', timeout: 15000 })
+  // ★★★ 修 2：**先查 `r.error`** —— spawn 失败【不抛异常】，而 `stdout` 是空串 ⇒
+  //   若不管它 ⇒ 下面会算出 `0` ⇒ **"读不到"冒充"读到 0"**（含义相反）。
+  if (r.error) return { n: -1, err: (r.error.code || r.error.message || 'spawn failed') }
+  if (r.status !== 0) return { n: -1, err: 'powershell exit=' + r.status }
+  const lines = String(r.stdout || '').split(/\r?\n/).filter(Boolean)
+  return { n: lines.filter((l) => l.includes(PROFILE) && !l.includes('--type=')).length, err: '' }
 }
+/** 计数（兼容旧调用点）：★ **读不到就抛** —— 绝不返回 0（那会被当成"没有残留"）。 */
+const chromeCount = () => {
+  const { n, err } = chromeCountRaw()
+  if (err) throw new Error('chromeCount 读不到进程表: ' + err + '（PS=' + PS_BIN + ' / ' + PS_HOW + '）')
+  return n
+}
+
 // ★★ v0.2.1：超时**先测再定**（不拍脑袋）。
 //   实测（2026-09-19 · 本机 · 同一个 profile 探针）：
 //     · 起 chrome 到"数到 1 个"= **1703ms**
@@ -133,7 +173,7 @@ const boot = async (config) => {
 }
 
 // 清理可能的历史残留
-spawnSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -match '${PROFILE.replace(/\\/g, '\\\\')}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 15000 })
+spawnSync(PS_BIN, ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -match '${PROFILE.replace(/\\/g, '\\\\')}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 15000 })
 
 let A = null
 await T('启动一次浏览器（web_status）', async () => {
@@ -177,14 +217,14 @@ await T('③ 多实例回收 + 重建单例', async () => {
   if (!r.ok) throw new Error(JSON.stringify(r))
   const after = r.instances
   try { extra.kill() } catch { }
-  spawnSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -match '${(PROFILE + '-extra').replace(/\\/g, '\\\\')}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 15000 })
+  spawnSync(PS_BIN, ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -match '${(PROFILE + '-extra').replace(/\\/g, '\\\\')}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 15000 })
   if (after !== 1) throw new Error('多实例未回收：before=' + before + ' after=' + after)
   C.cleanup()
   return 'before=' + before + ' → after=1（单例）'
 })
 
 // 收尾
-spawnSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -match '${PROFILE.replace(/\\/g, '\\\\')}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 15000 })
+spawnSync(PS_BIN, ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -match '${PROFILE.replace(/\\/g, '\\\\')}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 15000 })
 try { fs.rmSync(PROFILE, { recursive: true, force: true }) } catch { }
 try { fs.rmSync(PROFILE + '-extra', { recursive: true, force: true }) } catch { }
 
